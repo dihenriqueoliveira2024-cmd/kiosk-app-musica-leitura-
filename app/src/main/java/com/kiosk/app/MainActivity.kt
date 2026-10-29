@@ -4,6 +4,7 @@ import android.app.Activity
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
+import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.Drawable
@@ -11,7 +12,11 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.widget.BaseAdapter
+import android.widget.FrameLayout
+import android.widget.GridView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -24,17 +29,25 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
+data class AppItem(val nome: String, val comp: ComponentName, val icone: Drawable)
+
 class MainActivity : AppCompatActivity() {
 
     private val prefs by lazy { getSharedPreferences("kiosk", MODE_PRIVATE) }
+    private val M = ViewGroup.LayoutParams.MATCH_PARENT
+    private val W = ViewGroup.LayoutParams.WRAP_CONTENT
+
     private lateinit var raiz: LinearLayout
     private lateinit var barra: LinearLayout
+    private lateinit var seletor: LinearLayout
     private lateinit var listaWidgets: LinearLayout
+    private lateinit var rolagem: ScrollView
+    private lateinit var grade: GridView
     private lateinit var mgr: AppWidgetManager
     private lateinit var host: AppWidgetHost
     private var pendente = -1
+    private var apps: List<AppItem> = emptyList()
 
-    private val MUSICOLET = "in.krosbits.musicolet"
     private val CX = "com.cxinventor.file.explorer"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,18 +75,41 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#CCCCCC"))
             gravity = Gravity.CENTER
         }
+
         listaWidgets = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setOnLongClickListener { menuTela(); true }
         }
-        val rolagem = ScrollView(this).apply {
+        rolagem = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             isFillViewport = true
-            addView(listaWidgets, ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            ))
+            addView(listaWidgets, ViewGroup.LayoutParams(M, M))
             setOnLongClickListener { menuTela(); true }
+        }
+
+        grade = GridView(this).apply {
+            numColumns = 4
+            verticalSpacing = 24
+            selector = null
+            isVerticalScrollBarEnabled = false
+            adapter = object : BaseAdapter() {
+                override fun getCount() = apps.size
+                override fun getItem(position: Int) = apps[position]
+                override fun getItemId(position: Int) = position.toLong()
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                    return celulaApp(apps[position])
+                }
+            }
+            setOnItemLongClickListener { _, _, _, _ -> menuTela(); true }
+        }
+
+        val centro = FrameLayout(this)
+        centro.addView(rolagem, FrameLayout.LayoutParams(M, M))
+        centro.addView(grade, FrameLayout.LayoutParams(M, M))
+
+        seletor = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
         }
         barra = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -82,13 +118,13 @@ class MainActivity : AppCompatActivity() {
 
         raiz.addView(hora)
         raiz.addView(data)
-        raiz.addView(rolagem, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-        ).apply { topMargin = 32; bottomMargin = 16 })
-        raiz.addView(barra, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = 16 })
+        raiz.addView(centro, LinearLayout.LayoutParams(M, 0, 1f).apply {
+            topMargin = 24; bottomMargin = 12
+        })
+        raiz.addView(seletor, LinearLayout.LayoutParams(M, W).apply {
+            leftMargin = 120; rightMargin = 120; bottomMargin = 16
+        })
+        raiz.addView(barra, LinearLayout.LayoutParams(M, W).apply { topMargin = 8 })
 
         setContentView(raiz)
     }
@@ -101,6 +137,102 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         host.stopListening()
+    }
+
+    // ---------- Modo FOCO / NORMAL ----------
+    private fun modoNormal() = prefs.getString("modo", "foco") == "normal"
+
+    private fun montarSeletor() {
+        seletor.removeAllViews()
+        val atual = prefs.getString("modo", "foco")
+        for ((id, nome) in listOf("foco" to "FOCO", "normal" to "NORMAL")) {
+            val fundo = GradientDrawable().apply {
+                cornerRadius = 40f
+                setColor(Color.parseColor(if (atual == id) "#55FFFFFF" else "#15FFFFFF"))
+            }
+            val t = TextView(this).apply {
+                text = nome
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setPadding(0, 22, 0, 22)
+                background = fundo
+                layoutParams = LinearLayout.LayoutParams(0, W, 1f).apply { setMargins(8, 0, 8, 0) }
+                setOnClickListener {
+                    prefs.edit().putString("modo", id).apply()
+                    atualizarModo()
+                }
+            }
+            seletor.addView(t)
+        }
+    }
+
+    private fun atualizarModo() {
+        montarSeletor()
+        if (modoNormal()) {
+            rolagem.visibility = View.GONE
+            grade.visibility = View.VISIBLE
+            carregarApps()
+        } else {
+            grade.visibility = View.GONE
+            rolagem.visibility = View.VISIBLE
+            mostrarWidgets()
+        }
+    }
+
+    private fun carregarApps() {
+        Thread {
+            val filtro = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val l = packageManager.queryIntentActivities(filtro, 0)
+                .filter { it.activityInfo.name != MainActivity::class.java.name }
+                .map {
+                    AppItem(
+                        it.loadLabel(packageManager).toString(),
+                        ComponentName(it.activityInfo.packageName, it.activityInfo.name),
+                        it.loadIcon(packageManager)
+                    )
+                }
+                .sortedBy { it.nome.lowercase() }
+            runOnUiThread {
+                apps = l
+                (grade.adapter as? BaseAdapter)?.notifyDataSetChanged()
+            }
+        }.start()
+    }
+
+    private fun celulaApp(a: AppItem): View {
+        val c = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(0, 8, 0, 8)
+            setOnClickListener { abrirComp(a.comp) }
+            setOnLongClickListener { menuTela(); true }
+        }
+        c.addView(ImageView(this).apply {
+            setImageDrawable(a.icone)
+            layoutParams = LinearLayout.LayoutParams(130, 130)
+        })
+        c.addView(TextView(this).apply {
+            text = a.nome
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setSingleLine(true)
+            layoutParams = LinearLayout.LayoutParams(M, W).apply { topMargin = 6 }
+        })
+        return c
+    }
+
+    private fun abrirComp(comp: ComponentName) {
+        val i = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setComponent(comp)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            startActivity(i)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Não consegui abrir", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // ---------- Barra 4x1 ----------
@@ -122,50 +254,42 @@ class MainActivity : AppCompatActivity() {
         val c = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-            )
+            layoutParams = LinearLayout.LayoutParams(0, W, 1f)
             setOnClickListener { acao() }
             setOnLongClickListener { menuTela(); true }
         }
         if (icone != null) {
-            val iv = ImageView(this).apply {
+            c.addView(ImageView(this).apply {
                 setImageDrawable(icone)
                 layoutParams = LinearLayout.LayoutParams(140, 140)
-            }
-            c.addView(iv)
+            })
         } else {
             val circulo = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#33FFFFFF"))
             }
-            val tv = TextView(this).apply {
+            c.addView(TextView(this).apply {
                 text = emoji
                 textSize = 28f
                 gravity = Gravity.CENTER
                 setTextColor(Color.WHITE)
                 background = circulo
                 layoutParams = LinearLayout.LayoutParams(140, 140)
-            }
-            c.addView(tv)
+            })
         }
-        val nome = TextView(this).apply {
+        c.addView(TextView(this).apply {
             text = rotulo
             textSize = 12f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = 8 }
-        }
-        c.addView(nome)
+            layoutParams = LinearLayout.LayoutParams(W, W).apply { topMargin = 8 }
+        })
         return c
     }
 
     private fun montarBarra() {
         barra.removeAllViews()
-        barra.addView(celula("Música", iconeApp("musica", MUSICOLET), "♪") { abrirMusica() })
+        barra.addView(celula("Música", null, "🎵") { abrirMusica() })
         barra.addView(celula("Arquivos", iconeApp("arquivos", CX), "📁") { abrirArquivos() })
         barra.addView(celula("Leitura", null, "📖") {
             Toast.makeText(this, "Modo leitura em breve", Toast.LENGTH_SHORT).show()
@@ -177,237 +301,9 @@ class MainActivity : AppCompatActivity() {
         raiz.setBackgroundColor(Color.parseColor(prefs.getString("cor", "#000000")))
     }
 
-    // ---------- Widgets (como um launcher normal) ----------
+    // ---------- Widgets ----------
     private fun ids(): MutableList<Int> =
         (prefs.getString("widgets", "") ?: "")
             .split(",").mapNotNull { it.toIntOrNull() }.toMutableList()
 
-    private fun salvarIds(l: List<Int>) {
-        prefs.edit().putString("widgets", l.joinToString(",")).apply()
-    }
-
-    private fun nomeApp(pkg: String): String = try {
-        packageManager.getApplicationLabel(
-            packageManager.getApplicationInfo(pkg, 0)
-        ).toString()
-    } catch (e: Exception) {
-        pkg
-    }
-
-    private fun mostrarWidgets() {
-        listaWidgets.removeAllViews()
-        val d = resources.displayMetrics.density
-        val validos = ids().filter { mgr.getAppWidgetInfo(it) != null }
-        salvarIds(validos)
-
-        for (id in validos) {
-            val info = mgr.getAppWidgetInfo(id) ?: continue
-            try {
-                val v = host.createView(this, id, info)
-                v.setAppWidget(id, info)
-                var h = info.minHeight
-                if (info.resizeMode and AppWidgetProviderInfo.RESIZE_VERTICAL != 0) {
-                    h = maxOf(h, (340 * d).toInt())
-                }
-                h = maxOf(h, (110 * d).toInt())
-                v.setOnLongClickListener { menuTela(); true }
-                listaWidgets.addView(v, LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, h
-                ).apply { bottomMargin = (12 * d).toInt() })
-                v.post {
-                    val w = (v.width / d).toInt()
-                    val hh = (v.height / d).toInt()
-                    v.updateAppWidgetSize(null, w, hh, w, hh)
-                }
-            } catch (e: Exception) {
-                // widget com problema: ignora e segue
-            }
-        }
-
-        val fundo = GradientDrawable().apply {
-            cornerRadius = 32f
-            setColor(Color.parseColor("#22FFFFFF"))
-        }
-        val textoAdd = if (validos.isEmpty())
-            "＋  Adicionar widget\n(ou segure o dedo na tela)"
-        else "＋  Adicionar widget"
-        val add = TextView(this).apply {
-            text = textoAdd
-            textSize = 15f
-            setTextColor(Color.parseColor("#DDDDDD"))
-            gravity = Gravity.CENTER
-            setPadding(24, 36, 24, 36)
-            background = fundo
-            setOnClickListener { menuTela() }
-        }
-        listaWidgets.addView(add, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-    }
-
-    private fun menuTela() {
-        val itens = arrayOf(
-            "Adicionar widget", "Remover widget", "Configurar", "Trocar launcher"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Tela inicial")
-            .setItems(itens) { _, w ->
-                when (w) {
-                    0 -> escolherWidget()
-                    1 -> removerWidget()
-                    2 -> abrirConfig()
-                    3 -> abrirLauncher()
-                }
-            }.show()
-    }
-
-    private fun escolherWidget() {
-        val provs = mgr.installedProviders.sortedBy {
-            nomeApp(it.provider.packageName).lowercase() +
-                it.loadLabel(packageManager).lowercase()
-        }
-        if (provs.isEmpty()) {
-            Toast.makeText(this, "Nenhum widget encontrado", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val nomes = provs.map {
-            nomeApp(it.provider.packageName) + " — " + it.loadLabel(packageManager)
-        }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Escolha o widget")
-            .setItems(nomes) { _, w -> adicionar(provs[w]) }
-            .show()
-    }
-
-    private fun adicionar(info: AppWidgetProviderInfo) {
-        val id = host.allocateAppWidgetId()
-        pendente = id
-        if (mgr.bindAppWidgetIdIfAllowed(id, info.provider)) {
-            configurar(id)
-        } else {
-            val i = Intent(AppWidgetManager.ACTION_APPWIDGET_BIND)
-                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, info.provider)
-            try {
-                startActivityForResult(i, 1)
-            } catch (e: Exception) {
-                host.deleteAppWidgetId(id)
-                pendente = -1
-                Toast.makeText(this, "O Android não deixou adicionar", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun configurar(id: Int) {
-        val info = mgr.getAppWidgetInfo(id)
-        if (info == null) {
-            host.deleteAppWidgetId(id)
-            pendente = -1
-            Toast.makeText(this, "Não deu para adicionar esse widget", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (info.configure != null) {
-            try {
-                host.startAppWidgetConfigureActivityForResult(this, id, 0, 2, null)
-            } catch (e: Exception) {
-                guardar(id)
-            }
-        } else {
-            guardar(id)
-        }
-    }
-
-    private fun guardar(id: Int) {
-        val l = ids()
-        if (!l.contains(id)) l.add(id)
-        salvarIds(l)
-        pendente = -1
-        mostrarWidgets()
-    }
-
-    private fun removerWidget() {
-        val l = ids().filter { mgr.getAppWidgetInfo(it) != null }
-        if (l.isEmpty()) {
-            Toast.makeText(this, "Não há widgets para remover", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val nomes = l.map {
-            val info = mgr.getAppWidgetInfo(it)
-            nomeApp(info.provider.packageName) + " — " + info.loadLabel(packageManager)
-        }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Remover qual widget?")
-            .setItems(nomes) { _, w ->
-                host.deleteAppWidgetId(l[w])
-                salvarIds(ids().filter { it != l[w] })
-                mostrarWidgets()
-            }.show()
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 1 || requestCode == 2) {
-            val id = pendente
-            if (id == -1) return
-            if (resultCode == Activity.RESULT_OK) {
-                if (requestCode == 1) configurar(id) else guardar(id)
-            } else {
-                host.deleteAppWidgetId(id)
-                pendente = -1
-            }
-        }
-    }
-
-    // ---------- Apps ----------
-    private fun abrirConfig() {
-        startActivity(Intent(this, ConfigActivity::class.java))
-    }
-
-    private fun abrirLauncher() {
-        try {
-            startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
-        } catch (e: Exception) {
-            try {
-                startActivity(Intent(Settings.ACTION_SETTINGS))
-            } catch (e2: Exception) {
-                Toast.makeText(this, "Não consegui abrir as configurações", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun abrirPacote(pkg: String): Boolean {
-        val i = packageManager.getLaunchIntentForPackage(pkg) ?: return false
-        startActivity(i)
-        return true
-    }
-
-    private fun abrirMusica() {
-        val pkg = prefs.getString("musica", MUSICOLET)!!
-        if (!abrirPacote(pkg)) {
-            Toast.makeText(this, "Escolha o app de música", Toast.LENGTH_SHORT).show()
-            abrirConfig()
-        }
-    }
-
-    private fun abrirArquivos() {
-        val pkg = prefs.getString("arquivos", CX)!!
-        if (!abrirPacote(pkg)) {
-            Toast.makeText(this, "Escolha o app de arquivos", Toast.LENGTH_SHORT).show()
-            abrirConfig()
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        val c = WindowInsetsControllerCompat(window, window.decorView)
-        c.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        c.hide(WindowInsetsCompat.Type.systemBars())
-        aplicarCor()
-        montarBarra()
-        mostrarWidgets()
-    }
-}
+    private fun salvarIds
