@@ -3,6 +3,7 @@ package com.kiosk.app
 import android.app.Activity
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -20,8 +21,8 @@ class ConfigActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("kiosk", MODE_PRIVATE) }
     private lateinit var raiz: LinearLayout
     private lateinit var lista: LinearLayout
-    private lateinit var mgr: AppWidgetManager
     private lateinit var host: AppWidgetHost
+    private lateinit var mgr: AppWidgetManager
     private var pendente = -1
 
     private val MUSICOLET = "in.krosbits.musicolet"
@@ -118,7 +119,7 @@ class ConfigActivity : AppCompatActivity() {
     private fun montarLista() {
         lista.removeAllViews()
         lista.addView(linha("Cor de fundo", nomeCor()) { escolherCor() })
-        lista.addView(linha("Widget da música", "Mostrar na tela inicial") { escolherWidget() })
+        lista.addView(linha("Widget da música", "Escolher no seletor do Android") { escolherWidget() })
         lista.addView(linha("Remover widget", null) {
             removerWidget()
             Toast.makeText(this, "Widget removido", Toast.LENGTH_SHORT).show()
@@ -166,7 +167,7 @@ class ConfigActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- Widget ----------
+    // ---------- Widget (seletor do Android) ----------
     private fun removerWidget() {
         val id = prefs.getInt("widgetId", -1)
         if (id != -1) host.deleteAppWidgetId(id)
@@ -174,51 +175,64 @@ class ConfigActivity : AppCompatActivity() {
     }
 
     private fun escolherWidget() {
-        val pkgMusica = prefs.getString("musica", MUSICOLET)
-        var provs = mgr.installedProviders.filter { it.provider.packageName == pkgMusica }
-        if (provs.isEmpty()) provs = mgr.installedProviders
-        val nomes = provs.map { it.loadLabel(packageManager) }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Escolha o widget")
-            .setItems(nomes) { _, w ->
-                removerWidget()
-                val id = host.allocateAppWidgetId()
-                pendente = id
-                val provider = provs[w].provider
-                if (mgr.bindAppWidgetIdIfAllowed(id, provider)) {
-                    configurarOuSalvar(id)
-                } else {
-                    val i = Intent(AppWidgetManager.ACTION_APPWIDGET_BIND)
-                        .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-                        .putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, provider)
-                    startActivityForResult(i, 1)
-                }
-            }.show()
+        val id = host.allocateAppWidgetId()
+        pendente = id
+        val i = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK)
+            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+            .putParcelableArrayListExtra(
+                AppWidgetManager.EXTRA_CUSTOM_INFO,
+                ArrayList<AppWidgetProviderInfo>()
+            )
+            .putParcelableArrayListExtra(
+                AppWidgetManager.EXTRA_CUSTOM_EXTRAS,
+                ArrayList<Bundle>()
+            )
+        try {
+            startActivityForResult(i, 10)
+        } catch (e: Exception) {
+            host.deleteAppWidgetId(id)
+            pendente = -1
+            Toast.makeText(this, "Não consegui abrir o seletor de widgets", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun configurarOuSalvar(id: Int) {
         val info = mgr.getAppWidgetInfo(id)
-        if (info?.configure != null) {
-            host.startAppWidgetConfigureActivityForResult(this, id, 0, 2, null)
+        if (info == null) {
+            host.deleteAppWidgetId(id)
+            pendente = -1
+            Toast.makeText(this, "Não deu para adicionar esse widget", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (info.configure != null) {
+            try {
+                host.startAppWidgetConfigureActivityForResult(this, id, 0, 11, null)
+            } catch (e: Exception) {
+                salvarWidget(id)
+            }
         } else {
             salvarWidget(id)
         }
     }
 
     private fun salvarWidget(id: Int) {
+        val antigo = prefs.getInt("widgetId", -1)
+        if (antigo != -1 && antigo != id) host.deleteAppWidgetId(antigo)
         prefs.edit().putInt("widgetId", id).apply()
         pendente = -1
-        Toast.makeText(this, "Widget salvo", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Widget salvo. Volte para a tela inicial.", Toast.LENGTH_LONG).show()
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 1 || requestCode == 2) {
-            if (resultCode == Activity.RESULT_OK && pendente != -1) {
-                if (requestCode == 1) configurarOuSalvar(pendente) else salvarWidget(pendente)
-            } else if (pendente != -1) {
-                host.deleteAppWidgetId(pendente)
+        if (requestCode == 10 || requestCode == 11) {
+            val id = if (pendente != -1) pendente
+            else data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1) ?: -1
+            if (resultCode == Activity.RESULT_OK && id != -1) {
+                if (requestCode == 10) configurarOuSalvar(id) else salvarWidget(id)
+            } else if (id != -1) {
+                host.deleteAppWidgetId(id)
                 pendente = -1
             }
         }
