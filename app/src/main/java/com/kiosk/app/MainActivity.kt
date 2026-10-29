@@ -5,13 +5,15 @@ import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
-import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextClock
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -23,6 +25,7 @@ class MainActivity : AppCompatActivity() {
 
     private val prefs by lazy { getSharedPreferences("kiosk", MODE_PRIVATE) }
     private lateinit var raiz: LinearLayout
+    private lateinit var barra: LinearLayout
     private lateinit var caixaWidget: FrameLayout
     private lateinit var mgr: AppWidgetManager
     private lateinit var host: AppWidgetHost
@@ -50,7 +53,7 @@ class MainActivity : AppCompatActivity() {
         raiz = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(48, 80, 48, 48)
+            setPadding(32, 80, 32, 48)
         }
         val hora = TextClock(this).apply {
             format24Hour = "HH:mm"
@@ -67,17 +70,24 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
         }
         caixaWidget = FrameLayout(this)
+        barra = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
         raiz.addView(hora)
         raiz.addView(data)
         raiz.addView(caixaWidget, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
         ).apply { topMargin = 32; bottomMargin = 16 })
-        raiz.addView(botao("♪  Música") { abrirMusica() })
-        raiz.addView(botao("📁  Arquivos") { abrirArquivos() })
-        raiz.addView(botao("⚙  Configurar") { menuConfig() })
+        raiz.addView(barra, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 16 })
 
         setContentView(raiz)
         aplicarCor()
+        montarBarra()
         mostrarWidget()
     }
 
@@ -91,22 +101,73 @@ class MainActivity : AppCompatActivity() {
         host.stopListening()
     }
 
-    private fun botao(texto: String, acao: () -> Unit): Button {
-        val fundo = GradientDrawable().apply {
-            cornerRadius = 48f
-            setColor(Color.parseColor("#33FFFFFF"))
+    // ---------- Barra 4x1 ----------
+    private fun iconeApp(chave: String, padrao: String): Drawable? {
+        val pkg = prefs.getString(chave, padrao) ?: padrao
+        return try {
+            packageManager.getApplicationIcon(pkg)
+        } catch (e: Exception) {
+            null
         }
-        return Button(this).apply {
-            text = texto
-            textSize = 18f
-            setTextColor(Color.WHITE)
-            isAllCaps = false
-            background = fundo
+    }
+
+    private fun celula(
+        rotulo: String,
+        icone: Drawable?,
+        emoji: String,
+        acao: () -> Unit
+    ): LinearLayout {
+        val c = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 150
-            ).apply { topMargin = 24 }
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            )
             setOnClickListener { acao() }
         }
+        if (icone != null) {
+            val iv = ImageView(this).apply {
+                setImageDrawable(icone)
+                layoutParams = LinearLayout.LayoutParams(140, 140)
+            }
+            c.addView(iv)
+        } else {
+            val circulo = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#33FFFFFF"))
+            }
+            val tv = TextView(this).apply {
+                text = emoji
+                textSize = 28f
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                background = circulo
+                layoutParams = LinearLayout.LayoutParams(140, 140)
+            }
+            c.addView(tv)
+        }
+        val nome = TextView(this).apply {
+            text = rotulo
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 8 }
+        }
+        c.addView(nome)
+        return c
+    }
+
+    private fun montarBarra() {
+        barra.removeAllViews()
+        barra.addView(celula("Música", iconeApp("musica", MUSICOLET), "♪") { abrirMusica() })
+        barra.addView(celula("Arquivos", iconeApp("arquivos", CX), "📁") { abrirArquivos() })
+        barra.addView(celula("Leitura", null, "📖") {
+            Toast.makeText(this, "Modo leitura em breve", Toast.LENGTH_SHORT).show()
+        })
+        barra.addView(celula("Configurar", null, "⚙") { menuConfig() })
     }
 
     private fun aplicarCor() {
@@ -240,6 +301,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Escolha o app")
             .setItems(nomes) { _, w ->
                 prefs.edit().putString(chave, apps[w].activityInfo.packageName).apply()
+                montarBarra()
             }.show()
     }
 
@@ -250,5 +312,6 @@ class MainActivity : AppCompatActivity() {
         c.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         c.hide(WindowInsetsCompat.Type.systemBars())
+        montarBarra()
     }
 }
